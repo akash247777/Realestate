@@ -68,6 +68,10 @@ except ImportError:
         def fetch_realty_properties():
             return []
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'YOUR_GEMINI_API_KEY_HERE')
 genai.configure(api_key=GEMINI_API_KEY)
@@ -88,8 +92,17 @@ def initialize_database_connection():
     """Initialize database connection for Vercel environment"""
     global connector, engine, database_connected
     
-    if not all([CLOUD_SQL_INSTANCE_CONNECTION_NAME, CLOUD_SQL_DB_USER, CLOUD_SQL_DB_PASSWORD, CLOUD_SQL_DB_NAME]):
-        raise RuntimeError("Missing required Cloud SQL environment variables")
+    # Check if required environment variables are set
+    missing_vars = []
+    required_vars = ['CLOUD_SQL_INSTANCE_CONNECTION_NAME', 'CLOUD_SQL_DB_USER', 
+                     'CLOUD_SQL_DB_PASSWORD', 'CLOUD_SQL_DB_NAME']
+    
+    for var in required_vars:
+        if not os.getenv(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
     
     try:
         connector = Connector()
@@ -117,11 +130,11 @@ def initialize_database_connection():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         database_connected = True
-        logging.info("Successfully connected using Google Cloud SQL Connector with pytds")
+        logger.info("Successfully connected using Google Cloud SQL Connector with pytds")
     except Exception as e:
-        logging.error(f"Failed to connect using Google Cloud SQL Connector with pytds: {e}")
+        logger.error(f"Failed to connect using Google Cloud SQL Connector with pytds: {e}")
         # If connection fails, raise an error
-        raise RuntimeError("Database connection failed. Please check your database configuration.")
+        raise RuntimeError(f"Database connection failed: {str(e)}")
     
     # Ensure connector closes when the app exits
     if database_connected:
@@ -132,7 +145,7 @@ def initialize_database_connection():
 try:
     initialize_database_connection()
 except Exception as e:
-    logging.error(f"Failed to initialize database: {str(e)}")
+    logger.error(f"Failed to initialize database: {str(e)}")
 
 def execute_sql_query(sql_query):
     """Execute SQL query and return results as list of dictionaries"""
@@ -150,6 +163,9 @@ def execute_sql_query(sql_query):
 def handler(event, context):
     """Vercel serverless function handler for property search"""
     try:
+        # Log the incoming event for debugging
+        logger.info(f"Incoming event: {event}")
+        
         # Handle CORS preflight requests
         if event.get('httpMethod') == 'OPTIONS':
             return {
@@ -192,20 +208,82 @@ def handler(event, context):
                 'body': json.dumps({'error': 'Query cannot be empty'})
             }
         
+        # Check if database is connected
+        if not database_connected:
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': 'Database not connected. Please check your database configuration.'
+                })
+            }
+        
         # Generate SQL query using Gemini
-        sql_query = generate_sql_query(user_query, DB_STRUCTURE, PROMPT)
+        try:
+            sql_query = generate_sql_query(user_query, DB_STRUCTURE, PROMPT)
+            logger.info(f"Generated SQL query: {sql_query}")
+        except Exception as e:
+            logger.error(f"Error generating SQL query: {str(e)}")
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': f'Error generating SQL query: {str(e)}'
+                })
+            }
         
         # Clean the SQL query (remove markdown code blocks if present)
         cleaned_sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
         
         # Execute SQL query to get results from database
-        sql_results = execute_sql_query(cleaned_sql_query)
+        try:
+            sql_results = execute_sql_query(cleaned_sql_query)
+            logger.info(f"Executed SQL query successfully, got {len(sql_results)} results")
+        except Exception as e:
+            logger.error(f"Error executing SQL query: {str(e)}")
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': f'Error executing SQL query: {str(e)}'
+                })
+            }
         
         # Fetch RealtyFeed properties once for image matching
-        realty_properties = fetch_realty_properties()
+        try:
+            realty_properties = fetch_realty_properties()
+        except Exception as e:
+            logger.warning(f"Error fetching RealtyFeed properties: {str(e)}")
+            realty_properties = []
         
         # Transform results to property format
-        transformed_properties = transform_sql_results_to_properties(sql_results, realty_properties)
+        try:
+            transformed_properties = transform_sql_results_to_properties(sql_results, realty_properties)
+        except Exception as e:
+            logger.error(f"Error transforming SQL results: {str(e)}")
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': f'Error transforming results: {str(e)}'
+                })
+            }
         
         count = len(transformed_properties)
         
@@ -226,6 +304,8 @@ def handler(event, context):
             'message': message
         }
         
+        logger.info(f"Search completed successfully, returning {count} results")
+        
         return {
             'statusCode': 200,
             'headers': {
@@ -236,7 +316,7 @@ def handler(event, context):
         }
         
     except Exception as e:
-        logging.error(f"Error in search handler: {str(e)}")
+        logger.error(f"Error in search handler: {str(e)}", exc_info=True)
         return {
             'statusCode': 500,
             'headers': {
@@ -245,6 +325,6 @@ def handler(event, context):
             },
             'body': json.dumps({
                 'success': False,
-                'error': str(e)
+                'error': f'Search failed: {str(e)}'
             })
         }
