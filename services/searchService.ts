@@ -3,7 +3,12 @@
  * Handles communication with the backend API for natural language search
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+/// <reference types="vite/client" />
+
+// When deployed to Vercel, the API is served from the same domain
+// When running locally, we use the separate backend server
+const IS_VERCEL = import.meta.env.VITE_VERCEL === 'true';
+const API_BASE_URL = IS_VERCEL ? '/api' : (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api');
 
 export interface SearchResponse {
     success: boolean;
@@ -39,7 +44,7 @@ export async function searchProperties(query: string): Promise<SearchResponse> {
         return data;
     } catch (error) {
         console.error('Search error:', error);
-        throw error;
+        throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 }
 
@@ -53,6 +58,6 @@ export async function checkHealth(): Promise<{ status: string; service: string }
         return await response.json();
     } catch (error) {
         console.error('Health check error:', error);
-        throw error;
+        throw new Error(`Health check failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 }
