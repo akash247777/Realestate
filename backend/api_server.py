@@ -1,13 +1,15 @@
 # first run "python backend/api_server.py"
 import os
+import atexit
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 import pandas as pd
 from sqlalchemy import create_engine, text
-from urllib.parse import quote_plus
 from dotenv import load_dotenv
 import requests
+from google.cloud.sql.connector import Connector, IPTypes
+import pytds  # noqa: F401  # required by SQLAlchemy dialect
 
 # Load environment variables
 load_dotenv()
@@ -16,7 +18,55 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # Configure Gemini API
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+if not GEMINI_API_KEY:
+    raise RuntimeError("Missing required environment variable: GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Cloud SQL (SQL Server) configuration
+CLOUD_SQL_INSTANCE_CONNECTION_NAME = os.getenv('CLOUD_SQL_INSTANCE_CONNECTION_NAME')
+CLOUD_SQL_DB_USER = os.getenv('CLOUD_SQL_DB_USER')
+CLOUD_SQL_DB_PASSWORD = os.getenv('CLOUD_SQL_DB_PASSWORD')
+CLOUD_SQL_DB_NAME = os.getenv('CLOUD_SQL_DB_NAME')
+CLOUD_SQL_IP_TYPE = IPTypes.PRIVATE if os.getenv('CLOUD_SQL_PRIVATE_IP', 'false').lower() == 'true' else IPTypes.PUBLIC
+
+missing_cloud_sql_vars = [
+    var_name for var_name, value in [
+        ('CLOUD_SQL_INSTANCE_CONNECTION_NAME', CLOUD_SQL_INSTANCE_CONNECTION_NAME),
+        ('CLOUD_SQL_DB_USER', CLOUD_SQL_DB_USER),
+        ('CLOUD_SQL_DB_PASSWORD', CLOUD_SQL_DB_PASSWORD),
+        ('CLOUD_SQL_DB_NAME', CLOUD_SQL_DB_NAME),
+    ] if not value
+]
+if missing_cloud_sql_vars:
+    raise RuntimeError(f"Missing required Cloud SQL environment variables: {', '.join(missing_cloud_sql_vars)}")
+
+# Initialize Cloud SQL connector and SQLAlchemy engine
+connector = Connector()
+
+
+def getconn():
+    """
+    Returns a raw DB-API connection to Cloud SQL for SQL Server
+    using the Cloud SQL Python Connector.
+    """
+    return connector.connect(
+        CLOUD_SQL_INSTANCE_CONNECTION_NAME,
+        "pytds",
+        user=CLOUD_SQL_DB_USER,
+        password=CLOUD_SQL_DB_PASSWORD,
+        db=CLOUD_SQL_DB_NAME,
+        ip_type=CLOUD_SQL_IP_TYPE,
+    )
+
+
+engine = create_engine(
+    "mssql+pytds://",
+    creator=getconn,
+)
+
+# Ensure connector closes when the app exits
+atexit.register(connector.close)
 
 # Database structure
 DB_STRUCTURE = """
@@ -93,16 +143,6 @@ def find_property_images(address, realty_properties):
     
     return []
 
-def get_db_connection_string():
-    """Build SQL Server connection string from environment variables"""
-    server = os.getenv('DB_SERVER')
-    database = os.getenv('DB_DATABASE')
-    username = os.getenv('DB_USERNAME')
-    password = os.getenv('DB_PASSWORD')
-    
-    password_encoded = quote_plus(password)
-    return f'mssql+pyodbc://{username}:{password_encoded}@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server'
-
 def generate_sql_query(user_query, db_structure, prompt):
     """Generate SQL query using Gemini LLM"""
     try:
@@ -114,10 +154,9 @@ def generate_sql_query(user_query, db_structure, prompt):
     except Exception as e:
         raise Exception(f"Error generating SQL query: {str(e)}")
 
-def execute_sql_query(sql_query, db_connection_string):
+def execute_sql_query(sql_query):
     """Execute SQL query and return results as list of dictionaries"""
     try:
-        engine = create_engine(db_connection_string)
         with engine.connect() as connection:
             result = connection.execute(text(sql_query))
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
@@ -216,11 +255,8 @@ def search():
         # Clean the SQL query (remove markdown code blocks if present)
         cleaned_sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
         
-        # Get database connection string
-        db_connection_string = get_db_connection_string()
-        
         # Execute SQL query to get results from database
-        sql_results = execute_sql_query(cleaned_sql_query, db_connection_string)
+        sql_results = execute_sql_query(cleaned_sql_query)
         
         # Fetch RealtyFeed properties once for image matching
         realty_properties = fetch_realty_properties()
@@ -260,15 +296,6 @@ def health():
     return jsonify({'status': 'healthy', 'service': 'Real Estate Search API'})
 
 if __name__ == '__main__':
-    # Check for required environment variables
-    required_vars = ['GEMINI_API_KEY', 'DB_SERVER', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD']
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    
-    if missing_vars:
-        print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
-        print("Please create a .env file in the backend directory with all required variables.")
-        exit(1)
-    
     print("Starting Real Estate Search API server...")
     print("Server running on http://localhost:5000")
     app.run(debug=True, port=5000)
