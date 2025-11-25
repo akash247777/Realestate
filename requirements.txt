@@ -6,5 +6,3 @@ sqlalchemy
 python-dotenv
 requests
 cloud-sql-python-connector[mssql]
-pymssql
-pyodbc
