@@ -44,6 +44,10 @@ In your Vercel project settings, add the following environment variables:
 - `CLOUD_SQL_DB_PASSWORD` - Database password
 - `CLOUD_SQL_DB_NAME` - Database name
 
+**Important Security Note**: Never commit your Google Cloud Service Account credentials file ([gcp-sa.json](file:///C:/Realestate/backend/gcp-sa.json)) to the repository. 
+This file is already in the [.gitignore](file:///C:/Realestate/.gitignore) file to prevent accidental commits. For Vercel deployment, you should configure
+the Google Cloud authentication through Vercel's integration or by setting up the proper IAM permissions.
+
 ### 5. Deploy
 
 Click "Deploy" and wait for the build to complete.
@@ -76,7 +80,10 @@ Click "Deploy" and wait for the build to complete.
    CLOUD_SQL_DB_USER=your_db_user
    CLOUD_SQL_DB_PASSWORD=your_db_password
    CLOUD_SQL_DB_NAME=your_db_name
+   GOOGLE_APPLICATION_CREDENTIALS=backend/gcp-sa.json
    ```
+
+4. Download your Google Cloud Service Account credentials JSON file and save it as `backend/gcp-sa.json`
 
 ### Running the Application
 
@@ -111,3 +118,9 @@ This application uses:
 3. Google Gemini AI converts the natural language query to SQL
 4. The SQL query is executed against Google Cloud SQL database
 5. Results are returned to the frontend and displayed
+
+## Security Notes
+
+- The Google Cloud Service Account credentials file ([gcp-sa.json](file:///C:/Realestate/backend/gcp-sa.json)) is excluded from the repository via [.gitignore](file:///C:/Realestate/.gitignore)
+- Never commit sensitive credentials to version control
+- For production deployments, use proper IAM roles and permissions instead of service account keys when possible
