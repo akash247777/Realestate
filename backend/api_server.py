@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import requests
 from google.cloud.sql.connector import Connector, IPTypes
-import pytds  # noqa: F401  # required by SQLAlchemy dialect
+import pytds
 
 # Load environment variables
 load_dotenv()
@@ -41,14 +41,13 @@ missing_cloud_sql_vars = [
 if missing_cloud_sql_vars:
     raise RuntimeError(f"Missing required Cloud SQL environment variables: {', '.join(missing_cloud_sql_vars)}")
 
-# Initialize Cloud SQL connector and SQLAlchemy engine
+# Initialize Cloud SQL connector
 connector = Connector()
-
 
 def getconn():
     """
     Returns a raw DB-API connection to Cloud SQL for SQL Server
-    using the Cloud SQL Python Connector.
+    using the Cloud SQL Python Connector with pytds.
     """
     return connector.connect(
         CLOUD_SQL_INSTANCE_CONNECTION_NAME,
@@ -59,14 +58,28 @@ def getconn():
         ip_type=CLOUD_SQL_IP_TYPE,
     )
 
+# Create engine with pytds through the Cloud SQL Connector
+engine = None
+database_connected = False
 
-engine = create_engine(
-    "mssql+pytds://",
-    creator=getconn,
-)
+try:
+    engine = create_engine(
+        "mssql+pytds://",
+        creator=getconn,
+    )
+    # Test the connection
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    database_connected = True
+    print("Successfully connected using Google Cloud SQL Connector with pytds")
+except Exception as e:
+    print(f"Failed to connect using Google Cloud SQL Connector with pytds: {e}")
+    # If connection fails, raise an error since we don't want to use mock data
+    raise RuntimeError("Database connection failed. Please check your database configuration.")
 
 # Ensure connector closes when the app exits
-atexit.register(connector.close)
+if database_connected:
+    atexit.register(connector.close)
 
 # Database structure
 DB_STRUCTURE = """
@@ -92,7 +105,7 @@ Only return the SQL query, nothing else.
 
 # RealtyFeed API Configuration (only used for fetching images)
 REALTY_API_URL = "https://api.realtyfeed.com/reso/odata/Property?&$orderby=RFModificationTimestamp desc&$top=200&$count=true"
-REALTY_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NTM1ZDVmZjdkYTQ0OWI4ODU2NDFlOTA3YTYyMmYxMyIsInRva2VuX3VzZSI6ImFjY2VzcyIsInNjb3BlIjoiYXBpL3JlYWQiLCJleHAiOjE3NjQwNTI3NDQsImp0aSI6ImVjMzAzYTZhLTM5NTUtNDcwMC05MjI1LTYyOTJiNDNkZjZmNiIsImNsaWVudF9pZCI6IjY1MzVkNWZmN2RhNDQ5Yjg4NTY0MWU5MDdhNjIyZjEzIn0.FzZyXURLw2jJ44T6EOH5RyHD40KUHC9wxhLZGf5j5F0"
+REALTY_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NTM1ZDVmZjdkYTQ0OWI4ODU2NDFlOTA3YTYyMmYxMyIsInRva2VuX3VzZSI6ImFjY2VzcyIsInNjb3BlIjoiYXBpL3JlYWQiLCJleHAiOjE3NjQxNDk0OTYsImp0aSI6ImI3NTEwMTZlLTgwNzYtNDQ1OS05MjgwLTAyY2M2ZTM3MjgwYyIsImNsaWVudF9pZCI6IjY1MzVkNWZmN2RhNDQ5Yjg4NTY0MWU5MDdhNjIyZjEzIn0.AfKMeEBcHoBEzvj0OnOOf2fSKdkVIOUbJ-mbATH2hBA"
 
 def fetch_realty_properties():
     """Fetch properties from RealtyFeed API for image matching"""
@@ -156,6 +169,9 @@ def generate_sql_query(user_query, db_structure, prompt):
 
 def execute_sql_query(sql_query):
     """Execute SQL query and return results as list of dictionaries"""
+    if not database_connected or engine is None:
+        raise Exception("Database connection not available. Please check your database configuration.")
+    
     try:
         with engine.connect() as connection:
             result = connection.execute(text(sql_query))
@@ -293,7 +309,7 @@ def search():
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'Real Estate Search API'})
+    return jsonify({'status': 'healthy', 'service': 'Real Estate Search API', 'database_connected': database_connected})
 
 if __name__ == '__main__':
     print("Starting Real Estate Search API server...")

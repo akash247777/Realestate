@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "api/**/*.py",
+      "use": "@vercel/python",
+      "config": {
+        "runtime": "python3.9",
+        "maxLambdaSize": "50mb"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/health",
+      "dest": "/api/health.py",
+      "methods": ["GET", "OPTIONS"]
+    },
+    {
+      "src": "/api/search",
+      "dest": "/api/search.py",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/dist/$1"
+    }
+  ],
+  "env": {
+    "CLOUD_SQL_INSTANCE_CONNECTION_NAME": "@cloud_sql_instance_connection_name",
+    "CLOUD_SQL_DB_USER": "@cloud_sql_db_user",
+    "CLOUD_SQL_DB_PASSWORD": "@cloud_sql_db_password",
+    "CLOUD_SQL_DB_NAME": "@cloud_sql_db_name",
+    "CLOUD_SQL_PRIVATE_IP": "false",
+    "GEMINI_API_KEY": "@gemini_api_key"
+  }
+}
