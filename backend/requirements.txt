@@ -1,11 +1,7 @@
 flask
 flask-cors
 google-generativeai
-pandas
 sqlalchemy
 python-dotenv
 requests
-cloud-sql-python-connector
 cloud-sql-python-connector[mssql]
-pymssql
-pyodbc
