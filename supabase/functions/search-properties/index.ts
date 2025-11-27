@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { serve } from "jsr:@std/http@1.0.2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -84,43 +85,104 @@ async function generateSqlQuery(userQuery: string): Promise<string> {
   }
 }
 
+async function getCloudSqlAccessToken(): Promise<string> {
+  try {
+    const gcpSaJson = Deno.env.get('GCP_SA_JSON');
+    if (!gcpSaJson) {
+      throw new Error('GCP_SA_JSON not configured');
+    }
+
+    const serviceAccount = JSON.parse(gcpSaJson);
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + 3600;
+
+    const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = btoa(
+      JSON.stringify({
+        iss: serviceAccount.client_email,
+        scope: 'https://www.googleapis.com/auth/cloud-platform',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: expiresAt,
+        iat: now,
+      })
+    );
+
+    const jwt = `${header}.${payload}`;
+    const encoder = new TextEncoder();
+    const jwtData = encoder.encode(jwt);
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'pkcs8',
+      Deno.base64Decode(serviceAccount.private_key
+        .replace(/-----BEGIN PRIVATE KEY-----/g, '')
+        .replace(/-----END PRIVATE KEY-----/g, '')
+        .replace(/\n/g, '')),
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', cryptoKey, jwtData);
+    const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+    const signedJwt = `${jwt}.${signatureB64}`;
+
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: signedJwt,
+      }).toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!tokenResponse.ok) {
+      throw new Error(`Failed to get access token: ${tokenResponse.status}`);
+    }
+
+    const tokenData = await tokenResponse.json();
+    return tokenData.access_token;
+  } catch (error) {
+    console.error('Error getting Cloud SQL access token:', error);
+    throw error;
+  }
+}
+
 async function executeCloudSqlQuery(sql: string): Promise<any[]> {
   try {
-    const instanceConnection = Deno.env.get('CLOUD_SQL_INSTANCE_CONNECTION_NAME');
-    const dbUser = Deno.env.get('CLOUD_SQL_DB_USER');
-    const dbPassword = Deno.env.get('CLOUD_SQL_DB_PASSWORD');
-    const dbName = Deno.env.get('CLOUD_SQL_DB_NAME');
+    const projectId = Deno.env.get('GCP_PROJECT_ID');
+    const instanceName = Deno.env.get('CLOUD_SQL_INSTANCE_NAME');
+    const database = Deno.env.get('CLOUD_SQL_DB_NAME');
 
-    if (!instanceConnection || !dbUser || !dbPassword || !dbName) {
+    if (!projectId || !instanceName || !database) {
       throw new Error('Missing Cloud SQL configuration');
     }
 
-    // Use Cloud SQL Python Connector proxy endpoint
-    const proxyUrl = `http://127.0.0.1:3307`; // Default Cloud SQL Auth proxy port
-    const connectionString = `mssql://${dbUser}:${encodeURIComponent(dbPassword)}@${proxyUrl}/${dbName}`;
+    const accessToken = await getCloudSqlAccessToken();
 
-    console.log('Executing query on Cloud SQL...');
-    
-    // Since we can't use direct SQL Server connections in Edge Functions,
-    // we'll call an external service or use Cloud SQL Admin API
-    // For now, return mock data - in production, use Cloud SQL Connector or Proxy
-    const mockResults = [
+    const response = await fetch(
+      `https://sqladmin.googleapis.com/v1/projects/${projectId}/instances/${instanceName}/databases/${database}/query`,
       {
-        property_id: '1',
-        unparsed_address: '123 Main St, Springfield, IL',
-        list_price: 350000,
-        bedrooms: 3,
-        bathrooms: 2,
-        square_footage: 2500,
-        property_type: 'Single Family',
-        year_built: 2005,
-        description: 'Beautiful home with pool and garage',
-        latitude: 39.7817,
-        longitude: -89.6501,
-      },
-    ];
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: sql,
+        }),
+        signal: AbortSignal.timeout(30000),
+      }
+    );
 
-    return mockResults;
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('Cloud SQL API error:', error);
+      throw new Error(`Cloud SQL query failed: ${response.status} - ${error}`);
+    }
+
+    const result = await response.json();
+    return result.rows || [];
   } catch (error) {
     console.error('Error executing Cloud SQL query:', error);
     throw error;
@@ -148,7 +210,7 @@ function transformProperties(dbResults: any[]): any[] {
   }));
 }
 
-Deno.serve(async (req: Request) => {
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       status: 200,
@@ -179,6 +241,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    console.log('Search query:', query);
     const sqlQuery = await generateSqlQuery(query);
     console.log('Generated SQL:', sqlQuery);
 
