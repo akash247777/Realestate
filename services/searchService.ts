@@ -1,35 +1,35 @@
-/**
- * Search Service
- * Handles communication with the backend API for natural language search
- */
-
 /// <reference types="vite/client" />
 
-// When deployed to Vercel, the API is served from the same domain
-// When running locally, we use the separate backend server
-const IS_VERCEL = import.meta.env.VITE_VERCEL === 'true';
-const API_BASE_URL = IS_VERCEL ? '/api' : (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api');
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export interface SearchResponse {
     success: boolean;
     query: string;
-    sql: string;
     results: any[];
     count: number;
     message?: string;
     error?: string;
 }
 
-/**
- * Search properties using natural language query
- * @param query - Natural language search query
- * @returns Promise with search results
- */
 export async function searchProperties(query: string): Promise<SearchResponse> {
     try {
-        const response = await fetch(`${API_BASE_URL}/search`, {
+        if (!query.trim()) {
+            return {
+                success: false,
+                query,
+                results: [],
+                count: 0,
+                error: 'Query cannot be empty',
+            };
+        }
+
+        const apiUrl = `${supabaseUrl}/functions/v1/search-properties`;
+
+        const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
+                'Authorization': `Bearer ${anonKey}`,
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ query }),
@@ -48,16 +48,29 @@ export async function searchProperties(query: string): Promise<SearchResponse> {
     }
 }
 
-/**
- * Check if the backend API is healthy
- * @returns Promise with health status
- */
 export async function checkHealth(): Promise<{ status: string; service: string }> {
     try {
-        const response = await fetch(`${API_BASE_URL}/health`);
-        return await response.json();
+        const apiUrl = `${supabaseUrl}/functions/v1/search-properties`;
+
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${anonKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ query: 'show me all properties' }),
+        });
+
+        if (response.ok) {
+            return {
+                status: 'healthy',
+                service: 'Real Estate Search (Cloud SQL)',
+            };
+        }
+
+        throw new Error('Health check failed');
     } catch (error) {
         console.error('Health check error:', error);
-        throw new Error(`Health check failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        throw new Error('Health check failed');
     }
 }
